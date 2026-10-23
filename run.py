@@ -78,7 +78,7 @@ TOPORT_DEFAULTS = {
     'BB_DEFERRED_READBACK': '1', 'BB_READBACK_MERGE': 'fixed', 'BB_COPY_GPU_BUFFERS': '0',
     'BB_DEPTH_ALIAS_FIX': '0', 'BB_TOGGLES': '16384',
     # Shaders and pipelines: compiled in the background, cached per game in user/cache.
-    'BB_ASYNC_PIPELINES': '1', 'BB_ASYNC_SHADERS': '1', 'BB_ASYNC_COMPUTE': '0',
+    'BB_ASYNC_PIPELINES': '1', 'BB_ASYNC_SHADERS': '1', 'BB_ASYNC_COMPUTE': '1',
     'BB_GRAPHICS_SYNC': '0', 'BB_PIPELINE_CACHE': '1', 'BB_DRIVER_PIPELINE_CACHE': '0',
     'BB_COMPILE_THREADS': '2', 'BB_COMPILE_FAIR_QUEUE': '0', 'BB_COMPILE_AGGRESSIVE': '0',
     'BB_PRELOAD_BUDGET_MS': '0',
@@ -94,23 +94,25 @@ TOPORT_DEFAULTS = {
 
 # A new bbport.ini starts from the settings of the approved runs (teste-mira/pt-dlss.ini).
 TOPORT_INI = '''# bbport settings (in-game menu: Insert)
-upscaler=dlss
-preset=3
+upscaler=none
+preset=0
 sharpen=1
-sharpness=0.30
+sharpness=0.20
+spatial_fsr1=1
 jitter=0
 object_motion=0
 show_fps=1
-output_res=1920x1080
-live_resolution=0
-order_aa=quality
+output_res=3840x2160
+live_resolution=1
+order_aa=dlaa
 order_resolution=retail
-game_language=17
+game_language=1
+ui_language=en
 photo_camera=1
 fast_loading=1
 preload_shaders=1
 fps_limit=60
-order_fps=30
+order_fps=60
 '''
 
 
@@ -155,16 +157,16 @@ def toport_environment(env, config):
         env.setdefault('BB_ORDER_RESOLUTION', resolution)
     if resolution == '2160':
         env.setdefault('BB_GAME_ARGS', '-use4K')
-    env.setdefault('BB_LANGUAGE', setting('game_language', '17'))
+    env.setdefault('BB_LANGUAGE', setting('game_language', '1'))
     env.setdefault('BB_ORDER_PHOTO_CAMERA_UNLOCK', setting('photo_camera', '1'))
     if setting('fast_loading', '1') == '1':
         env.setdefault('BB_COMPUTE_PIPE', '1')
         env.setdefault('BB_COMPUTE_PIPE_PARTS', 'ade')
         env.setdefault('BB_COMMAND_PIPE', '1')
     env.setdefault('BB_FPS_LIMIT', setting('fps_limit', '60'))
-    # The game's own frame rate (scripts/order_fps.py): 60 is illusion0001's unlock, which
-    # softlocks QTEs in chapters 6 and 9. fps_limit only caps what the game produces.
-    env.setdefault('BB_ORDER_FPS', setting('order_fps', '30'))
+    # The game's own frame rate (scripts/order_fps.py): 60/120 are experimental unlocks and
+    # softlock QTEs in chapters 6 and 9. fps_limit only caps what the game produces.
+    env.setdefault('BB_ORDER_FPS', setting('order_fps', '60'))
     # Pipelines of the last two sessions built before the game starts (fewer first-use stalls).
     env.setdefault('BB_PRELOAD_PIPELINES', setting('preload_shaders', '1'))
     env['BB_TOPORT_KEYS'] = ','.join(sorted(set(env) - before))

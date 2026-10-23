@@ -101,20 +101,20 @@ struct Values {
     /// BB_ORDER_* / BB_LANGUAGE / pipe environment; changes need a restart (except fps_limit).
     std::atomic<int> order_aa{OrderAaQuality};   ///< OrderAa: game TAA, DLAA, DLSS modes
     std::atomic<int> order_resolution{800};      ///< 800 retail (2.40:1), 1080 or 720 16:9
-    std::atomic<int> game_language{17};          ///< PS4 system language code (17 pt-BR)
+    std::atomic<int> game_language{1};           ///< PS4 system language code (1 en-US)
     std::atomic<bool> photo_camera{true};        ///< free photo camera in cutscenes
     std::atomic<bool> fast_loading{true};        ///< compute pipe parts ade + command pipe
     std::atomic<bool> preload_shaders{true};     ///< build last sessions' pipelines at start
-    std::atomic<bool> ui_english{false};         ///< menu language: ui_language=en (launcher)
+    std::atomic<bool> ui_english{true};          ///< menu language: ui_language=en (launcher)
     std::atomic<unsigned> fps_limit{60};         ///< 30/60/90/120; F9 cycles it, applied live
-    std::atomic<unsigned> order_fps{30};         ///< the game's own rate: 30, or 60 (unlock patch)
+    std::atomic<unsigned> order_fps{60};         ///< game's own rate: 30, 60, or experimental 120
     int startup_order_aa = OrderAaQuality;
     int startup_order_resolution = 800;
-    int startup_game_language = 17;
+    int startup_game_language = 1;
     bool startup_photo_camera = true;
     bool startup_fast_loading = true;
     bool startup_preload_shaders = true;
-    unsigned startup_order_fps = 30;
+    unsigned startup_order_fps = 60;
 
     /// Startup settings for the explicit BB_RENDER_RES compatibility patch only.
     int startup_preset = NativeAA;

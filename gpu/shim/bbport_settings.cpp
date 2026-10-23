@@ -87,7 +87,7 @@ void Set(Values& v, const std::string& key, const std::string& value) {
     } else if (key == "fps_limit") {
         v.fps_limit = i <= 30 ? 30u : i <= 60 ? 60u : i <= 90 ? 90u : 120u;
     } else if (key == "order_fps") {
-        v.order_fps = i == 60 ? 60u : 30u;
+        v.order_fps = i >= 120 ? 120u : i >= 60 ? 60u : 30u;
     } else if (key == "output_res") {
         for (int r = 0; r < OutputCount; ++r) {
             if (value == std::to_string(OutputWidths[r]) + "x" + std::to_string(OutputHeights[r])) {
