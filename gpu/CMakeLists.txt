@@ -88,6 +88,20 @@ set(FFX_VK_PORTABLE_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(FFX_VK_PORTABLE_BUILD_PROBE OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/fsr-vulkan EXCLUDE_FROM_ALL)
 
+# AMD's FSR 3.1.4 host sources use a few MSVC CRT conveniences. MinGW/Clang on Windows exposes
+# most of them, but libc++ does not provide _countof or swprintf_s and does not implicitly bring
+# placement new and the global math overloads into scope. Pre-include a narrow compatibility
+# header for the two third-party targets instead of modifying the pinned submodule.
+if (WIN32 AND NOT MSVC)
+    set(FFX_MINGW_COMPAT "${CMAKE_CURRENT_SOURCE_DIR}/shim/ffx_mingw_compat.h")
+    foreach(FFX_TARGET IN ITEMS ffx_vulkan_fsr3_host_1_1_4
+                                ffx_vulkan_fsr3_vk_backend_1_1_4)
+        if (TARGET ${FFX_TARGET})
+            target_compile_options(${FFX_TARGET} PRIVATE -include "${FFX_MINGW_COMPAT}")
+        endif()
+    endforeach()
+endif()
+
 # Host shaders -> headers (same scheme as shadPS4's host_shaders/CMakeLists.txt).
 set(SHADER_SRC ${CMAKE_CURRENT_SOURCE_DIR}/shadps4/video_core/host_shaders)
 set(SHADER_INCLUDE ${CMAKE_CURRENT_BINARY_DIR}/include)
