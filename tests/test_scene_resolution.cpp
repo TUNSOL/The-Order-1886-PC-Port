@@ -14,6 +14,12 @@
 
 int main() {
     using namespace Vulkan;
+    assert((SceneResolution::GameSizeForSetting(nullptr) == SceneResolution::Size{1280, 720}));
+    assert((SceneResolution::GameSizeForSetting("retail") == SceneResolution::Size{1920, 800}));
+    assert((SceneResolution::GameSizeForSetting("1080") == SceneResolution::Size{1920, 1080}));
+    assert((SceneResolution::GameSizeForSetting("2160") == SceneResolution::Size{3840, 1600}));
+    assert((SceneResolution::ForPreset(1, SceneResolution::GameSizeForSetting("2160")) ==
+            SceneResolution::Size{2560, 1066}));
     Instance instance(0, false);
     // Calls emitted by this executable use a local dispatcher. libbbgpu.so initializes
     // its own default dispatcher while constructing Instance.

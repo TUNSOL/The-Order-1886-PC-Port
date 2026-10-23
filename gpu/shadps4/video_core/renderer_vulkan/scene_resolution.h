@@ -11,21 +11,22 @@ struct Size {
     uint32_t width = 1920, height = 1080;
     bool operator==(const Size&) const = default;
 };
-/// The Order: 1886's full scene size, the game resolution patched at start (BB_ORDER_RESOLUTION:
-/// 720 the game's default, 1080, 2160 experimental). The scene targets, their proxies
-/// and DLSS follow it.
+/// The Order: 1886's full scene size for a configured resolution. The retail camera renders a
+/// 2.40:1 scene inside the 16:9 presentation target, so its scene height is smaller than the
+/// mode's display height. The 4K experiment restores that same camera and therefore produces
+/// 3840x1600 scene targets rather than 3840x2160 ones.
+inline Size GameSizeForSetting(const char* value) {
+    const int lines = value ? std::atoi(value) : 0;
+    if (value && value[0] == 'r') {
+        return {1920, 800};
+    }
+    return lines == 2160 ? Size{3840, 1600}
+         : lines == 1080 ? Size{1920, 1080} : Size{1280, 720};
+}
+
+/// The scene targets, their reduced proxies and DLSS follow the configured game scene size.
 inline Size GameSize() {
-    static const Size size = [] {
-        const char* env = std::getenv("BB_ORDER_RESOLUTION");
-        const int lines = env ? std::atoi(env) : 0;
-        // retail: the 2.40:1 camera draws the scene into 1920x800 targets (the bars are outside
-        // them); the reduced scene and DLSS work at that size.
-        if (env && env[0] == 'r') {
-            return Size{1920, 800};
-        }
-        return lines == 2160 ? Size{3840, 2160}
-             : lines == 1080 ? Size{1920, 1080} : Size{1280, 720};
-    }();
+    static const Size size = GameSizeForSetting(std::getenv("BB_ORDER_RESOLUTION"));
     return size;
 }
 inline Size ForPreset(int preset, Size output = {}) {
