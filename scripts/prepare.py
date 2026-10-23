@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Inspect an already plaintext PS4 SELF; prepare a native entry-point probe.
+"""Inspect an already plaintext PS4 SELF or extracted ELF; prepare a native entry-point probe.
 
 No decryption, patches to source files, third-party modules or Python dependencies.
 Format references are linked in README.md. All offsets are checked before use.
@@ -23,11 +23,8 @@ def unpack(fmt, data, offset):
     return struct.unpack(fmt, span(data, offset, struct.calcsize(fmt)))
 
 
-def parse_self(data):
-    if span(data, 0, 4) != b'O\x15=\x1d':
-        raise ValueError("expected PS4 SELF")
-    count, = unpack('<H', data, 24)
-    base = 32 + count * 32
+def elf_headers(data, base):
+    """Read a PS4 x86-64 ELF header and its program headers at *base*."""
     header = unpack('<16sHHIQQQIHHHHHH', data, base)
     if header[0][:7] != b'\x7fELF\x02\x01\x01' or header[2] != 62:
         raise ValueError("expected little-endian x86-64 ELF")
@@ -36,6 +33,25 @@ def parse_self(data):
     ph = [dict(zip(('type', 'flags', 'offset', 'vaddr', 'paddr', 'filesz', 'memsz', 'align'),
                    unpack('<IIQQQQQQ', data, base + header[5] + i * 56)))
           for i in range(header[10])]
+    return header, ph
+
+
+def parse_self(data):
+    # Some dumping tools remove the plaintext SELF wrapper and leave the complete embedded ELF.
+    # Accept that lossless representation directly; this does not decrypt or decompress anything.
+    if span(data, 0, 4) == b'\x7fELF':
+        header, ph = elf_headers(data, 0)
+        end = max(p['offset'] + p['filesz'] for p in ph)
+        if end > 512 * 1024 * 1024:
+            raise ValueError("probe image exceeds 512 MiB limit")
+        elf = bytearray(span(data, 0, end))
+        return elf, header, ph, [], []
+
+    if span(data, 0, 4) != b'O\x15=\x1d':
+        raise ValueError("expected plaintext PS4 SELF or extracted ELF")
+    count, = unpack('<H', data, 24)
+    base = 32 + count * 32
+    header, ph = elf_headers(data, base)
     end = max(p['offset'] + p['filesz'] for p in ph)
     if end > 512 * 1024 * 1024:
         raise ValueError("probe image exceeds 512 MiB limit")

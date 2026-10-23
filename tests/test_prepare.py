@@ -19,6 +19,31 @@ def fixture():
 
 
 class SelfTests(unittest.TestCase):
+    def test_already_extracted_elf_is_accepted(self):
+        data = bytearray(0x1010)
+        struct.pack_into('<16sHHIQQQIHHHHHH', data, 0,
+                         b'\x7fELF\x02\x01\x01\x09', 0xfe10, 62, 1, 0, 64, 0, 0,
+                         64, 56, 1, 0, 0, 0)
+        struct.pack_into('<IIQQQQQQ', data, 64, 1, 5, 0x1000, 0, 0, 16, 32, 0x1000)
+        data[0x1000:] = bytes(range(16))
+
+        elf, header, ph, segments, missing = parse_self(data)
+
+        self.assertEqual(elf, data)
+        self.assertEqual(header[4], 0)
+        self.assertEqual(ph[0]['vaddr'], 0)
+        self.assertEqual(segments, [])
+        self.assertEqual(missing, [])
+
+    def test_truncated_extracted_elf_is_rejected(self):
+        data = bytearray(64 + 56)
+        struct.pack_into('<16sHHIQQQIHHHHHH', data, 0,
+                         b'\x7fELF\x02\x01\x01\x09', 0xfe10, 62, 1, 0, 64, 0, 0,
+                         64, 56, 1, 0, 0, 0)
+        struct.pack_into('<IIQQQQQQ', data, 64, 1, 5, 0x1000, 0, 0, 16, 32, 0x1000)
+        with self.assertRaisesRegex(ValueError, 'out of bounds'):
+            parse_self(data)
+
     def test_libc_ret_contract_is_verified_from_symbol_and_code(self):
         def libc(instruction):
             data=bytearray(0x320)
