@@ -496,6 +496,9 @@ private:
     VAddr pending_min = ~VAddr{0}, pending_max = 0; ///< bounds of pending_writes
     u32 pending_checks = 0;
     u64 proxy_samples = 0; ///< texture bindings that read a scene proxy (statistics)
+    /// Expected sampled-image types when an already-built compute pipeline temporarily stands
+    /// in for a compatible permutation that is still compiling.
+    const std::vector<Shader::ImageSpecialization>* bind_expected_images = nullptr;
     float sampler_lod_bias = 0.0f; ///< bbport: extra bias of this draw's samplers
     bool scene_debug_frame = false; ///< BB_SCENE_DEBUG: this frame's passes are printed
     bool PendingWriteOverlaps(VAddr address, u64 size);

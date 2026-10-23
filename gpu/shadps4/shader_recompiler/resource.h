@@ -3,6 +3,10 @@
 
 #pragma once
 
+#include <algorithm>
+#include <bit>
+#include <cstdlib>
+
 #include "common/types.h"
 #include "shader_recompiler/ir/type.h"
 #include "video_core/amdgpu/resource.h"
@@ -111,6 +115,14 @@ struct BufferResource {
 };
 using BufferResourceList = boost::container::static_vector<BufferResource, NUM_BUFFERS>;
 
+/// The Order's material/lighting compute leaves unused image descriptors stale. Limit the
+/// workaround to that one confirmed program: the earlier all-shader experiment shortened frame
+/// spikes but made scene loads much longer. BB_ORDER_NULL_STALE_TSHARP=0 is an A/B escape hatch.
+inline const bool g_order_null_stale_tsharps = [] {
+    const char* value = std::getenv("BB_ORDER_NULL_STALE_TSHARP");
+    return !(value && value[0] == '0');
+}();
+
 enum class MipStorageFallbackMode : u16 {
     None,
     DynamicIndex,
@@ -140,7 +152,12 @@ struct ImageResource {
             image.type = u64(AmdGpu::ImageType::Color2DArray);
             image.depth = (image.depth + 1) * 6 - 1;
         }
-        if (!image.Valid()) {
+        const bool order_stale = g_order_null_stale_tsharps && info.pgm_hash == 0x804aeead;
+        if (!image.Valid() ||
+            (order_stale &&
+             (image.Address() < 0x10000 || image.Address() >= (1ULL << 40) ||
+              image.GetDataFmt() == AmdGpu::DataFormat::FormatInvalid ||
+              image.base_level > image.last_level || !Plausible(image)))) {
             image = AmdGpu::Image::Null(is_depth);
         } else if (is_depth) {
             const auto data_fmt = image.GetDataFmt();
@@ -150,6 +167,30 @@ struct ImageResource {
             }
         }
         return image;
+    }
+
+    /// Reject shapes seen only in stale descriptors of the program above. Valid targets stay
+    /// well below these limits; the renderer already rejects these descriptors at bind time.
+    constexpr bool Plausible(const AmdGpu::Image& image) const {
+        const u64 width = image.width, height = image.height;
+        const u64 layers = image.NumLayers();
+        if (width >= 8192 || height >= 8192 || layers > 2048 ||
+            width * height * layers > (256u << 20) ||
+            (layers > 16 && (width >= 2048 || height >= 2048))) {
+            return false;
+        }
+        const bool is_3d = image.GetType() == AmdGpu::ImageType::Color3D;
+        if (image.NumSamples() <= 1) {
+            const u64 depth = is_3d ? u64(image.depth) + 1 : 1;
+            const u32 levels = std::bit_width(std::max({width + 1, height + 1, depth}));
+            if (image.base_level >= levels) {
+                return false;
+            }
+        }
+        if (!is_written && !is_atomic && !needs_native) {
+            return image.IsCube() ? is_array : !(is_3d && is_array);
+        }
+        return true;
     }
 
     constexpr bool Fetch(const u32* flatbuf, AmdGpu::Image* out) const {

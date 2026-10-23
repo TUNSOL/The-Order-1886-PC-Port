@@ -25,7 +25,8 @@
 
 namespace Serialization {
 /* You should increment versions below once corresponding serialization scheme is changed. */
-static constexpr u32 ShaderBinaryVersion = 10u; // bbport: + upstream #5348 indirect ids, #5352 sharp pattern
+// 11: legacy V_MAC/V_MAD semantics and NVIDIA SSBO store/load barriers change generated SPIR-V.
+static constexpr u32 ShaderBinaryVersion = 11u;
 static constexpr u32 ShaderMetaVersion = 13u; // SRT recovery ABI; older executables reject new readers
 static constexpr u32 PipelineKeyVersion = 6u; // bbport: stage hashes are content keys
 } // namespace Serialization
@@ -52,6 +53,10 @@ u64 PermutationContentKey(u64 pgm_hash, const Shader::StageSpecialization& spec,
                      (u64{Serialization::ShaderBinaryVersion} << 32) ^
                      (u64{reader_revision} << 16);
     return XXH3_64bits_withSeed(bytes.data(), bytes.size(), seed) | 1; // never 0
+}
+
+u64 SpvIdentity(std::span<const u32> spv) {
+    return spv.empty() ? 0 : XXH3_64bits(spv.data(), spv.size_bytes()) | 1;
 }
 } // namespace
 
@@ -420,11 +425,14 @@ bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage, 
     sel.runtime_infos[stage] = spec.runtime_info;
     if (perm_idx < target.modules.size()) {
         module = target.modules[perm_idx].module;
+        if (!target.modules[perm_idx].spv_hash) {
+            target.modules[perm_idx].spv_hash = SpvIdentity(spv);
+        }
     } else {
         module = CompileSPV(spv, instance.GetDevice());
         if (target.info.sw_stage == Shader::SwStage::Vertex)
             BbFaceDepth::Register(module, spv, pgm_hash);
-        target.AddPermut(module, std::move(spec));
+        target.AddPermut(module, std::move(spec), SpvIdentity(spv));
     }
     local_perm_hash = HashCombine(pgm_hash, perm_idx);
     NotePermutationContent(local_perm_hash, content_key);

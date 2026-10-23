@@ -50,6 +50,7 @@ struct Profile {
     /// bbport: NVIDIA without fragment shader barycentrics (Pascal and older).
     bool needs_integer_interpolation_fix{};
     bool needs_lds_barriers{};
+    bool needs_ssbo_store_load_barrier{};
     bool needs_buffer_offsets{};
     bool needs_unorm_fixup{};
     bool needs_clip_distance_emulation{};

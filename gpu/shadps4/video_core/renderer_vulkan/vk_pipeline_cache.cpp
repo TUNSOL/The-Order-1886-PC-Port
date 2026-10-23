@@ -11,11 +11,13 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <limits>
 #include <thread>
 #include <mutex>
 #include <ranges>
 #include <string>
 #include <unordered_set>
+#include <xxhash.h>
 
 #include "common/hash.h"
 #include "common/thread.h"
@@ -43,6 +45,10 @@
 extern "C" __declspec(dllimport) int __stdcall GlobalMemoryStatusEx(void* status);
 #endif
 namespace {
+u64 SpvIdentity(std::span<const u32> spv) {
+    return spv.empty() ? 0 : XXH3_64bits(spv.data(), spv.size_bytes()) | 1;
+}
+
 u64 AvailableRamMiB() {
 #ifdef _WIN32
     struct {
@@ -372,6 +378,8 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
         }(),
         .needs_lds_barriers = instance.GetDriverID() == vk::DriverId::eNvidiaProprietary ||
                               instance.GetDriverID() == vk::DriverId::eMesaKosmickrisp,
+        .needs_ssbo_store_load_barrier =
+            instance.GetDriverID() == vk::DriverId::eNvidiaProprietary,
         .needs_buffer_offsets = instance.StorageMinAlignment() > 4,
         .needs_unorm_fixup = instance.GetDriverID() == vk::DriverId::eMesaKosmickrisp,
         .needs_clip_distance_emulation = instance.GetDriverID() == vk::DriverId::eNvidiaProprietary,
@@ -435,6 +443,18 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
     startup_mark("WarmUp end");
     StartAsyncCompilers();
     startup_mark("async compiler start end");
+    // Recent-pipeline tracking is independent of the optional Vulkan driver cache. Previously
+    // this saver lived only in the `persist` branch below, so the default configuration never
+    // produced pipelines_recentes.txt and "preload shaders" rebuilt nothing on the next run.
+    recent_pipeline_saver = std::jthread([this](std::stop_token stop) {
+        for (u32 ticks = 0; !stop.stop_requested(); ++ticks) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            if (ticks % 20 == 19) {
+                SaveRecentPipelines();
+            }
+        }
+        SaveRecentPipelines();
+    });
     if (!persist) {
         return;
     }
@@ -488,7 +508,6 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
             if (ticks % 60 != 59) {
                 continue; // every 30 s
             }
-            SaveRecentPipelines();
             const u64 compiles = g_bb_compiles_total.load();
             if (compiles != saved_compiles && save(false)) {
                 saved_compiles = compiles;
@@ -497,7 +516,6 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
         if (g_bb_compiles_total.load() != saved_compiles) {
             save(true);
         }
-        SaveRecentPipelines();
     });
 }
 
@@ -864,11 +882,12 @@ void PipelineCache::DrainAsyncPipelines() {
         }
         const size_t perm_idx = program.modules.size();
         const u64 perm_hash = HashCombine(program.info.pgm_hash, perm_idx);
+        const u64 spv_hash = SpvIdentity(result.spv);
         RegisterShaderBinary(std::move(result.spv),
                              RegisterShaderMeta(program.info, result.spec.fetch_shader_data,
                                                 result.spec, perm_hash, perm_idx));
         std::unique_lock lk{programs_mutex};
-        program.AddPermut(result.module, std::move(result.spec));
+        program.AddPermut(result.module, std::move(result.spec), spv_hash);
     }
     for (auto& result : done) {
         BbSceneDiag::Event("graphics_ready", std::hash<GraphicsPipelineKey>{}(result.key));
@@ -890,6 +909,78 @@ void PipelineCache::DrainAsyncPipelines() {
 
 bool PipelineCache::AsyncComputeOn() const {
     return async_compute && !BbToggle::Disabled(BbToggle::AsyncCompute);
+}
+
+namespace {
+
+/// Returns the number of sampled-image specializations that differ, or no value when using the
+/// candidate would change any non-image part of the descriptor ABI or a storage-image binding.
+std::optional<u32> ImageOnlyDifference(const Shader::StageSpecialization& current,
+                                       const Shader::StageSpecialization& candidate) {
+    if (!current.Valid() || !candidate.Valid() ||
+        current.runtime_info != candidate.runtime_info || current.start != candidate.start ||
+        current.bitset != candidate.bitset ||
+        current.fetch_shader_data != candidate.fetch_shader_data ||
+        current.vs_attribs != candidate.vs_attribs || current.buffers != candidate.buffers ||
+        current.fmasks != candidate.fmasks || current.samplers != candidate.samplers ||
+        current.images.size() != candidate.images.size()) {
+        return std::nullopt;
+    }
+
+    u32 differences = 0;
+    for (size_t index = 0; index < current.images.size(); ++index) {
+        const auto& live = current.images[index];
+        const auto& compiled = candidate.images[index];
+        if (live == compiled) {
+            continue;
+        }
+        // A different storage image could redirect writes. A different descriptor-array length
+        // would violate the pipeline layout. Sampled type/format differences are safe when the
+        // rasterizer substitutes a null descriptor for just that binding.
+        if (live.is_storage || compiled.is_storage ||
+            live.num_bindings != compiled.num_bindings) {
+            return std::nullopt;
+        }
+        ++differences;
+    }
+    return differences ? std::optional{differences} : std::nullopt;
+}
+
+} // namespace
+
+const ComputePipeline* PipelineCache::FallbackComputePipeline(u64 pgm_hash) {
+    const auto program_it = program_cache.find(pgm_hash);
+    if (program_it == program_cache.end()) {
+        return nullptr;
+    }
+    Program& program = *program_it->second;
+    const auto selected_it = std::ranges::find(program.modules, sel.modules[0],
+                                               &Program::Module::module);
+    if (selected_it == program.modules.end()) {
+        return nullptr;
+    }
+
+    const auto& current = selected_it->spec;
+    const ComputePipeline* closest = nullptr;
+    const Shader::StageSpecialization* closest_spec = nullptr;
+    u32 closest_difference = std::numeric_limits<u32>::max();
+    for (size_t index = 0; index < program.modules.size(); ++index) {
+        const ComputePipelineKey key{HashCombine(pgm_hash, index)};
+        const auto pipeline_it = compute_pipelines.find(key);
+        if (pipeline_it == compute_pipelines.end()) {
+            continue;
+        }
+        const auto difference = ImageOnlyDifference(current, program.modules[index].spec);
+        if (difference && *difference < closest_difference) {
+            closest = pipeline_it->second.get();
+            closest_spec = &program.modules[index].spec;
+            closest_difference = *difference;
+        }
+    }
+    if (closest) {
+        closest->SetFallbackImages(closest_spec->images);
+    }
+    return closest;
 }
 
 const ComputePipeline* PipelineCache::GetComputePipeline() {
@@ -940,6 +1031,10 @@ const ComputePipeline* PipelineCache::GetComputePipeline() {
             async_cv.notify_one();
         }
         BbSceneDiag::Count(BbSceneDiag::dispatch_pipeline);
+        if (const auto* fallback = FallbackComputePipeline(sel.infos[0]->pgm_hash)) {
+            NoteUsed(fallback);
+            return fallback;
+        }
         return nullptr;
     }
     const auto [it, is_new] = compute_pipelines.try_emplace(compute_key);
@@ -1382,10 +1477,11 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
         auto spec = Shader::StageSpecialization(new_program->info, runtime_info, profile, start);
         const auto perm_hash = HashCombine(params.hash, 0);
 
+        const u64 spv_hash = SpvIdentity(last_spv);
         RegisterShaderBinary(std::move(last_spv), RegisterShaderMeta(new_program->info,
                                                                      spec.fetch_shader_data, spec,
                                                                      perm_hash, 0));
-        new_program->AddPermut(module, std::move(spec));
+        new_program->AddPermut(module, std::move(spec), spv_hash);
         new_program->info_template = std::make_unique<Shader::Info>(new_program->info);
         Program* program = new_program.get();
         {
@@ -1467,15 +1563,36 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
         auto new_info = Shader::Info(hw_stage, sw_stage, params);
         module = CompileModule(new_info, runtime_info, params.code, perm_idx, binding);
 
+        const u64 spv_hash = SpvIdentity(last_spv);
         RegisterShaderBinary(std::move(last_spv), RegisterShaderMeta(info, spec.fetch_shader_data,
                                                                      spec, perm_hash, perm_idx));
         std::unique_lock lk{programs_mutex};
-        program->AddPermut(module, std::move(spec));
+        program->AddPermut(module, std::move(spec), spv_hash);
     } else {
         info.AddBindings(binding);
         module = it->module;
         perm_idx = std::distance(program->modules.begin(), it);
         perm_hash = HashCombine(params.hash, perm_idx);
+    }
+    static const bool reuse_compute = [] {
+        const char* env = std::getenv("THEORDER_COMPUTE_PIPELINE_REUSE");
+        return !env || env[0] != '0';
+    }();
+    if (hw_stage == HwStage::Compute && reuse_compute &&
+        !EmulatorSettings.IsPatchShaders() && !EmulatorSettings.IsShaderCollect()) {
+        const bool first_lookup = !program->modules[perm_idx].compute_pipeline_permutation;
+        const size_t canonical = program->ComputePipelinePermutation(perm_idx);
+        if (canonical != perm_idx) {
+            static const bool log = std::getenv("THEORDER_PERMUTATION_LOG") != nullptr;
+            if (log && first_lookup) {
+                std::printf("Compute pipeline reuse: shader %016llx permutation %zu -> %zu "
+                            "(SPIR-V %016llx)\n",
+                            static_cast<unsigned long long>(params.hash), perm_idx, canonical,
+                            static_cast<unsigned long long>(
+                                program->modules[perm_idx].spv_hash));
+            }
+            perm_hash = HashCombine(params.hash, canonical);
+        }
     }
     return std::make_tuple(&program->info, module,
                            program->modules[perm_idx].spec.fetch_shader_data, perm_hash);

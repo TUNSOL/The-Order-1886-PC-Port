@@ -1993,6 +1993,10 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
     set_writes.clear();
     buffer_infos.clear();
     image_infos.clear();
+    bind_expected_images =
+        pipeline->IsCompute()
+            ? static_cast<const ComputePipeline*>(pipeline)->FallbackImages()
+            : nullptr;
     // bbport: G-buffer passes sample material textures for a scene rendered below the output
     // size; the temporal upscaler restores the detail of the output's mip level (FSR guide:
     // log2(render / output)). Shadows, post-processing and UI keep the guest's bias.
@@ -2746,7 +2750,8 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
     const u32 first_image_idx = image_infos.size();
     TextureSet* set_slot = nullptr;
     const bool focus_snapshot = !on_helper && FrameCapture::FocusDepthWanted(stage.pgm_hash);
-    if (!on_helper && !focus_snapshot && BindTexturesFromSet(stage, prepared, first_image_idx, barrier, set_slot)) {
+    if (!bind_expected_images && !on_helper && !focus_snapshot &&
+        BindTexturesFromSet(stage, prepared, first_image_idx, barrier, set_slot)) {
         // Descriptor writes: one per image (no mip arrays in a memoized set).
         for (u32 i = 0; i < stage.images.size(); ++i) {
             auto& set_write = set_writes[write_index++];
@@ -2850,14 +2855,44 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
             continue;
         }
 
-        capture_sharp("passed_guard");
-
         const Shader::MipStorageFallbackMode mip_fallback_mode = image_desc.mip_fallback_mode;
         // Same as image_desc.NumBindings(stage), without fetching the T# again.
         const u32 num_bindings =
             mip_fallback_mode == Shader::MipStorageFallbackMode::DynamicIndex
                 ? static_cast<u32>(tsharp.last_level - tsharp.base_level + 1)
                 : 1u;
+
+        if (bind_expected_images && image_index < bind_expected_images->size()) {
+            Shader::ImageSpecialization live{};
+            live.type = tsharp.GetViewType(image_desc.is_array);
+            live.is_integer = AmdGpu::IsInteger(tsharp.GetNumberFmt());
+            live.is_storage = image_desc.is_written;
+            live.is_cube = tsharp.IsCube();
+            if (live.is_storage) {
+                live.dst_select = tsharp.DstSelect();
+            } else {
+                live.is_srgb = tsharp.GetNumberFmt() == AmdGpu::NumberFormat::Srgb;
+            }
+            live.num_conversion = tsharp.GetNumberConversion();
+            live.num_bindings = num_bindings;
+            if (live != (*bind_expected_images)[image_index]) {
+                capture_sharp("fallback_type_mismatch");
+                // Preserve the fallback pipeline's descriptor layout without binding an image
+                // whose Vulkan type differs from the shader's declaration.
+                for (u32 binding_index = 0; binding_index < num_bindings; ++binding_index) {
+                    image_bindings.emplace_back(VideoCore::ImageId{},
+                                                &image_desc_storage.emplace_back());
+                    image_binding_entries.push_back(nullptr);
+                    binding_proxy_ok.push_back(false);
+                }
+                image_descriptor_array_sizes.push_back(num_bindings);
+                set_ok = false;
+                continue;
+            }
+        }
+
+        capture_sharp("passed_guard");
+
         const bool proxy_candidate = sample_proxies && num_bindings == 1 &&
                                      !image_desc.needs_native && !image_desc.is_written &&
                                      mip_fallback_mode == Shader::MipStorageFallbackMode::None;
