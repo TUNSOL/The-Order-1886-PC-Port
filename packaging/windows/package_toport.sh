@@ -48,7 +48,12 @@ cp run.py LICENSE "$dest/"
 cp packaging/windows/LEIA-ME-TOport.txt "$dest/"
 if [[ -f out/bbport_dlss.dll && -f out/nvngx_dlss.dll ]]; then
     cp out/bbport_dlss.dll out/nvngx_dlss.dll "$dest/bin/"
-    mkdir -p "$dest/licenses" && cp out/NVIDIA-DLSS-LICENSE.txt "$dest/licenses/"
+    mkdir -p "$dest/licenses"
+    if [[ -f out/NVIDIA-DLSS-LICENSE.txt ]]; then
+        cp out/NVIDIA-DLSS-LICENSE.txt "$dest/licenses/"
+    else
+        echo "NVIDIA DLSS redistributable license was not generated; packaging the supplied DLL without a duplicate license file" >&2
+    fi
     cp gpu/dlss_bridge/LICENSE.txt "$dest/licenses/bbport_dlss-LICENSE.txt"
 else
     echo "DLSS bridge not built (packaging/windows/build_dlss.sh): no DLSS in this package" >&2
